@@ -1,81 +1,157 @@
+import logging
 import os
+import psycopg2
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
+# CONFIG
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ADMIN_ID = int(os.getenv("TELEGRAM_ADMIN_ID", "0"))
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
+MOMO_NUMBER = os.getenv("MOMO_NUMBER")
+ACCOUNT_NAME = os.getenv("ACCOUNT_NAME")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-MENU = [["📄 Buy Checker Cards", "🎓 University Forms"],
-        ["📚 Study Materials", "📞 Contact Admin"]]
+# DB CONNECT
+conn = psycopg2.connect(DATABASE_URL)
+cur = conn.cursor()
 
+# CREATE TABLES
+cur.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id BIGINT PRIMARY KEY,
+    referrer BIGINT,
+    balance NUMERIC DEFAULT 0
+);
+""")
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS orders (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT,
+    item TEXT,
+    amount NUMERIC,
+    status TEXT DEFAULT 'pending'
+);
+""")
+
+conn.commit()
+
+# MENU
+menu = ReplyKeyboardMarkup([
+    ["📄 Buy Checker", "🎓 University Forms"],
+    ["📦 My Orders", "🏆 Affiliate"]
+], resize_keyboard=True)
+
+# UNIVERSITY PRICES
+UNI_FORMS = {
+    "UG": 295, "KNUST": 295, "UCC": 295, "UEW": 295,
+    "UDS": 295, "UMaT": 295, "UHAS": 295, "UENR": 295,
+    "UPSA": 295, "GIMPA": 295, "AAMUSTED": 295,
+    "CKT-UTAS": 295, "SDD-UBIDS": 295, "UESD": 295,
+    "GCTU": 295, "UniMAC": 295
+}
+
+TECH_FORMS = {
+    "ATU": 250, "KsTU": 250, "KTU": 250,
+    "CCTU": 250, "TTU": 250, "HTU": 250, "BTU": 250
+}
+
+# START
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    ref = context.args[0] if context.args else None
+
+    cur.execute("SELECT * FROM users WHERE user_id=%s", (user.id,))
+    if not cur.fetchone():
+        cur.execute("INSERT INTO users (user_id, referrer) VALUES (%s,%s)", (user.id, ref))
+        conn.commit()
+
     await update.message.reply_text(
-        "Welcome to ScholarDeals 🎓\n\nChoose an option:",
-        reply_markup=ReplyKeyboardMarkup(MENU, resize_keyboard=True)
+        "Welcome to ScholarDeals Bot 👋",
+        reply_markup=menu
     )
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-
-    if text == "📄 Buy Checker Cards":
-        await update.message.reply_text(
-            "WASSCE Checker\nPrice: GH¢18.50\n\nSend payment to:\nMoMo: 0530790707\nName: Frank Nsiah\n\nAfter payment, send screenshot."
-        )
-
-    elif text == "🎓 University Forms":
-        await update.message.reply_text(
-            "Get university forms via WhatsApp:\nhttps://wa.me/233530790707"
-        )
-
-    elif text == "📚 Study Materials":
-        await update.message.reply_text(
-            "Send what you need (course + level). Admin will reply you."
-        )
-
-    elif text == "📞 Contact Admin":
-        await update.message.reply_text(
-            "Chat admin:\nhttps://wa.me/233530790707"
-        )
-
-    else:
-        await update.message.reply_text("Please choose from the menu.")
-
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.message.from_user
-
-    caption = f"New payment screenshot\nName: {user.full_name}\nUsername: @{user.username}\nUser ID: {user.id}"
-
-    await context.bot.send_photo(
-        chat_id=ADMIN_ID,
-        photo=update.message.photo[-1].file_id,
-        caption=caption
+# BUY CHECKER
+async def buy_checker(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        f"Send payment to:\n{MOMO_NUMBER}\n{ACCOUNT_NAME}\n\nThen send screenshot."
     )
 
-    await update.message.reply_text("Payment received. Waiting for approval.")
+# UNIVERSITY FORMS
+async def university_forms(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = "🎓 University Forms:\n\n"
 
-async def reply_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+    for uni, price in UNI_FORMS.items():
+        text += f"{uni} — GH¢{price}\n"
+
+    text += "\n🏫 Technical Universities:\n\n"
+
+    for uni, price in TECH_FORMS.items():
+        text += f"{uni} — GH¢{price}\n"
+
+    await update.message.reply_text(text)
+
+# ORDERS
+async def my_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    cur.execute("SELECT item, amount, status FROM orders WHERE user_id=%s", (user_id,))
+    rows = cur.fetchall()
+
+    if not rows:
+        await update.message.reply_text("No orders yet.")
         return
 
-    try:
-        user_id = int(context.args[0])
-        message = " ".join(context.args[1:])
+    msg = "📦 Your Orders:\n\n"
+    for item, amount, status in rows:
+        msg += f"{item} — GH¢{amount} ({status})\n"
 
-        await context.bot.send_message(chat_id=user_id, text=message)
-        await update.message.reply_text("Message sent.")
-    except:
-        await update.message.reply_text("Usage: /reply user_id message")
+    await update.message.reply_text(msg)
 
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+# AFFILIATE DASHBOARD
+async def affiliate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("reply", reply_command))
-    app.add_handler(MessageHandler(filters.TEXT, handle_message))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    cur.execute("SELECT balance FROM users WHERE user_id=%s", (user_id,))
+    balance = cur.fetchone()[0]
 
-    print("Bot running...")
-    app.run_polling()
+    bot_username = (await context.bot.get_me()).username
+    link = f"https://t.me/{bot_username}?start={user_id}"
 
-if __name__ == "__main__":
-    main()
+    msg = f"""
+🏆 Affiliate Dashboard
+
+💰 Balance: GH¢ {balance}
+
+🔗 Your Link:
+{link}
+
+Share this link and earn!
+"""
+    await update.message.reply_text(msg)
+
+# HANDLE TEXT
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+
+    if text == "📄 Buy Checker":
+        await buy_checker(update, context)
+
+    elif text == "🎓 University Forms":
+        await university_forms(update, context)
+
+    elif text == "📦 My Orders":
+        await my_orders(update, context)
+
+    elif text == "🏆 Affiliate":
+        await affiliate(update, context)
+
+# MAIN
+app = ApplicationBuilder().token(TOKEN).build()
+
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("myorders", my_orders))
+app.add_handler(MessageHandler(filters.TEXT, handle))
+
+print("Bot running...")
+app.run_polling()
