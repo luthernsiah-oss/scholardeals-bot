@@ -1,0 +1,117 @@
+import os
+import psycopg2
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+conn = psycopg2.connect(DATABASE_URL)
+cur = conn.cursor()
+
+# TABLES
+cur.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id BIGINT PRIMARY KEY,
+    referrer BIGINT,
+    balance NUMERIC DEFAULT 0
+);
+""")
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS orders (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT,
+    item TEXT,
+    amount NUMERIC,
+    status TEXT DEFAULT 'pending'
+);
+""")
+
+conn.commit()
+
+menu = ReplyKeyboardMarkup([
+    ["📄 Buy Checker", "🎓 University Forms"],
+    ["📦 My Orders", "🏆 Affiliate"]
+], resize_keyboard=True)
+
+UNI = ["UG","KNUST","UCC","UEW","UDS","UMaT","UHAS","UENR","UPSA","GIMPA","AAMUSTED","CKT-UTAS","SDD-UBIDS","UESD","GCTU","UniMAC"]
+TECH = ["ATU","KsTU","KTU","CCTU","TTU","HTU","BTU"]
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    ref = context.args[0] if context.args else None
+
+    cur.execute("SELECT * FROM users WHERE user_id=%s", (user.id,))
+    if not cur.fetchone():
+        cur.execute("INSERT INTO users (user_id, referrer) VALUES (%s,%s)", (user.id, ref))
+        conn.commit()
+
+    await update.message.reply_text("Welcome to ScholarDeals 👋", reply_markup=menu)
+
+async def forms(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = "🎓 University Forms\n\n"
+
+    for u in UNI:
+        msg += f"{u} — GH¢295\n"
+
+    msg += "\n🏫 Technical Universities\n\n"
+
+    for t in TECH:
+        msg += f"{t} — GH¢250\n"
+
+    await update.message.reply_text(msg)
+
+async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Send MoMo to 0530790707 (Frank Nsiah) and send screenshot.")
+
+async def orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    cur.execute("SELECT item, amount, status FROM orders WHERE user_id=%s", (user_id,))
+    rows = cur.fetchall()
+
+    if not rows:
+        await update.message.reply_text("No orders yet.")
+        return
+
+    msg = "📦 Your Orders\n\n"
+    for r in rows:
+        msg += f"{r[0]} — GH¢{r[1]} ({r[2]})\n"
+
+    await update.message.reply_text(msg)
+
+async def affiliate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    cur.execute("SELECT balance FROM users WHERE user_id=%s", (user_id,))
+    bal = cur.fetchone()[0]
+
+    botname = (await context.bot.get_me()).username
+    link = f"https://t.me/{botname}?start={user_id}"
+
+    await update.message.reply_text(
+        f"🏆 Affiliate Dashboard\n\n💰 Balance: GH¢{bal}\n\n🔗 Your Link:\n{link}"
+    )
+
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+
+    if text == "📄 Buy Checker":
+        await buy(update, context)
+
+    elif text == "🎓 University Forms":
+        await forms(update, context)
+
+    elif text == "📦 My Orders":
+        await orders(update, context)
+
+    elif text == "🏆 Affiliate":
+        await affiliate(update, context)
+
+app = ApplicationBuilder().token(TOKEN).build()
+
+app.add_handler(CommandHandler("start", start))
+app.add_handler(MessageHandler(filters.TEXT, handle))
+
+print("Bot running...")
+app.run_polling()
